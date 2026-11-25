@@ -1,0 +1,6 @@
+{
+  "name": "KlipGram",
+  "description": "Unduh foto, video, Instagram Reels, Story publik, dan ekstrak audio berkualitas tinggi langsung dari tautan Instagram secara cepat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
