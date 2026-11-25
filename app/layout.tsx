@@ -32,12 +32,29 @@ export const metadata: Metadata = {
     description:
       'Unduh foto, video, Instagram Reels, Story publik, dan ekstrak audio berkualitas tinggi langsung dari tautan Instagram secara cepat.',
     type: 'website',
+    siteName: 'KlipGram',
+    images: [
+      {
+        url: '/og.png',
+        width: 1200,
+        height: 630,
+        alt: 'KlipGram — Instagram downloader retro: unduh foto, video, reels, story & ekstrak audio MP3',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'KlipGram — Unduh Foto, Video, Reels, Story & Ekstrak Audio Instagram',
     description:
       'Unduh foto, video, Instagram Reels, Story publik, dan ekstrak audio berkualitas tinggi langsung dari tautan Instagram secara cepat.',
+    images: ['/og.png'],
+  },
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/apple-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
+    apple: [{ url: '/apple-icon.png', sizes: '180x180', type: 'image/png' }],
   },
 };
 
