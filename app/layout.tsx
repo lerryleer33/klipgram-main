@@ -89,6 +89,13 @@ export async function generateMetadata(): Promise<Metadata> {
       title: SITE_TITLE,
       description: SITE_DESCRIPTION,
     },
+    icons: {
+      icon: [
+        { url: '/icon.svg', type: 'image/svg+xml' },
+        { url: '/apple-icon.png', sizes: '180x180', type: 'image/png' },
+      ],
+      apple: [{ url: '/apple-icon.png', sizes: '180x180', type: 'image/png' }],
+    },
   };
 }
 

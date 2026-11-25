@@ -115,8 +115,13 @@ function extractShortcodeMediaNode(node: Record<string, unknown>, target: Parsed
     sidecar.edges.forEach((edge, idx) => {
       const child = edge?.node;
       if (!child) return;
-      const isVideo = Boolean(child.is_video && child.video_url);
-      const mediaUrl = isVideo ? safeMediaUrl(child.video_url) : safeMediaUrl(child.display_url);
+      const childIsVideo = Boolean(child.is_video) || typeof child.video_duration === 'number';
+      const childVideoUrl = childIsVideo ? safeMediaUrl(child.video_url) : undefined;
+      // A video whose file URL is missing must not fall back to its thumbnail:
+      // skip it; if no usable media remains the caller tries the next strategy.
+      if (childIsVideo && !childVideoUrl) return;
+      const isVideo = childIsVideo;
+      const mediaUrl = isVideo ? childVideoUrl : safeMediaUrl(child.display_url);
       const thumbUrl = safeMediaUrl(child.display_url);
       if (!mediaUrl) return;
       const dims = child.dimensions as { width?: number; height?: number } | undefined;
@@ -132,8 +137,13 @@ function extractShortcodeMediaNode(node: Record<string, unknown>, target: Parsed
       });
     });
   } else {
-    const isVideo = Boolean(node.is_video && node.video_url);
-    const mediaUrl = isVideo ? safeMediaUrl(node.video_url) : safeMediaUrl(node.display_url);
+    const nodeIsVideo = Boolean(node.is_video) || typeof node.video_duration === 'number';
+    const nodeVideoUrl = nodeIsVideo ? safeMediaUrl(node.video_url) : undefined;
+    // A video whose file URL is missing must not fall back to its thumbnail:
+    // return null so the caller tries the next extraction strategy.
+    if (nodeIsVideo && !nodeVideoUrl) return null;
+    const isVideo = nodeIsVideo;
+    const mediaUrl = isVideo ? nodeVideoUrl : safeMediaUrl(node.display_url);
     const thumbUrl = safeMediaUrl(node.display_url);
     if (mediaUrl) {
       const dims = node.dimensions as { width?: number; height?: number } | undefined;
@@ -310,7 +320,10 @@ async function tryEmbedStrategy(target: ParsedInstagramTarget): Promise<Instagra
       }
     }
 
-    // 3. Fallback: scrape EmbeddedMediaImage only (never static UI sprites or 150x150 avatars)
+    // 3. Fallback: scrape EmbeddedMediaImage only (never static UI sprites or 150x150 avatars).
+    // This can only ever produce an image, so skip it for reels/videos — otherwise it
+    // would shadow the GraphQL and OpenGraph strategies that can find the real video.
+    if (target.kind === 'reel' || target.kind === 'tv') continue;
     const imgMatch = html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/i);
     const usernameMatch = html.match(/class="UsernameText"[^>]*>([^<]+)</i);
     const captionMatch = html.match(/class="Caption"[^>]*>([\s\S]*?)<\/div>/i);
@@ -403,6 +416,10 @@ async function tryOpenGraphStrategy(target: ParsedInstagramTarget): Promise<Inst
 
   const videoUrl = safeMediaUrl(readMeta('og:video') || readMeta('og:video:secure_url'));
   const imageUrl = safeMediaUrl(readMeta('og:image') || readMeta('twitter:image'));
+
+  // A reel/tv URL is a video by definition: an image-only OpenGraph result would
+  // present the video's thumbnail as a downloadable photo, so refuse it instead.
+  if (!videoUrl && (target.kind === 'reel' || target.kind === 'tv')) return null;
 
   if (!videoUrl && !imageUrl) return null;
 
@@ -535,6 +552,66 @@ async function tryStoryStrategy(target: ParsedInstagramTarget): Promise<Instagra
   return tryOpenGraphStrategy(target);
 }
 
+// Last resort for reels/videos: yt-dlp talks to Instagram with browser TLS
+// impersonation, which plain server requests cannot do and which Instagram
+// requires on this endpoint.
+async function tryYtDlpStrategy(target: ParsedInstagramTarget): Promise<InstagramExtractionResult | null> {
+  if (target.kind !== 'reel' && target.kind !== 'tv' && target.kind !== 'post') return null;
+
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+
+  try {
+    const { stdout } = await run('yt-dlp', ['-J', '--no-warnings', target.normalizedUrl], {
+      timeout: 20000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const info = JSON.parse(stdout) as {
+      id?: string;
+      uploader?: string;
+      title?: string;
+      description?: string;
+      duration?: number;
+      thumbnail?: string;
+      width?: number;
+      height?: number;
+      formats?: Array<{ url?: string; ext?: string; vcodec?: string | null; acodec?: string | null; width?: number; height?: number; abr?: number }>;
+    };
+
+    const formats = (info.formats || []).filter((f) => typeof f.url === 'string');
+    // Prefer a progressive mp4 (video+audio); otherwise use the best video-only
+    // dash stream and mark audio separately.
+    const mp4 = formats.find((f) => f.ext === 'mp4' && f.vcodec !== 'none' && f.acodec !== 'none');
+    const videoOnly = [...formats].reverse().find((f) => f.ext === 'mp4' && f.vcodec !== 'none' && f.acodec === 'none');
+    const chosen = mp4 || videoOnly;
+    if (!chosen?.url) return null;
+
+    return {
+      shortcode: target.shortcode,
+      kind: target.kind,
+      sourceUrl: target.normalizedUrl,
+      username: info.uploader || 'instagram',
+      caption: info.description || info.title || '(tanpa caption)',
+      strategy: 'yt-dlp',
+      items: [
+        {
+          id: info.id || target.shortcode,
+          type: 'video',
+          url: chosen.url,
+          thumbnailUrl: info.thumbnail ? safeMediaUrl(info.thumbnail) : undefined,
+          width: chosen.width ?? info.width,
+          height: chosen.height ?? info.height,
+          durationSec: info.duration,
+          hasAudio: Boolean(mp4),
+        },
+      ],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: { url?: unknown };
   try {
@@ -569,7 +646,8 @@ export async function POST(req: NextRequest) {
       result =
         (await tryEmbedStrategy(target)) ||
         (await tryGraphqlStrategy(target)) ||
-        (await tryOpenGraphStrategy(target));
+        (await tryOpenGraphStrategy(target)) ||
+        (await tryYtDlpStrategy(target));
     }
 
     if (!result) {
