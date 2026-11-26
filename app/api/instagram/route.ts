@@ -59,6 +59,18 @@ async function safeInstagramFetch(
 
     if (sessionCookie) {
       headers.Cookie = `sessionid=${encodeURIComponent(sessionCookie)}`;
+    } else {
+      const rawCookie = process.env.INSTAGRAM_COOKIE?.trim();
+      if (rawCookie) {
+        const names: string[] = [];
+        for (const line of rawCookie.split('\n')) {
+          const cols = line.trim().split('\t');
+          if (cols.length >= 7 && !line.startsWith('#')) {
+            names.push(`${cols[5]}=${cols.slice(6).join(' ')}`);
+          }
+        }
+        if (names.length > 0) headers.Cookie = names.join('; ');
+      }
     }
 
     try {
@@ -563,10 +575,15 @@ async function tryYtDlpStrategy(target: ParsedInstagramTarget): Promise<Instagra
   const run = promisify(execFile);
 
   try {
-    const { stdout } = await run('yt-dlp', ['-J', '--no-warnings', target.normalizedUrl], {
-      timeout: 20000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    const { ytDlpCookieArgs } = await import('@/lib/cookies');
+    const { stdout } = await run(
+      'yt-dlp',
+      [...(await ytDlpCookieArgs('INSTAGRAM_COOKIE')), '-J', '--no-warnings', target.normalizedUrl],
+      {
+        timeout: 20000,
+        maxBuffer: 10 * 1024 * 1024,
+      }
+    );
     const info = JSON.parse(stdout) as {
       id?: string;
       uploader?: string;
