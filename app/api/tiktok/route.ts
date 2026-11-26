@@ -138,9 +138,10 @@ async function tryYtDlp(target: ParsedInstagramTarget): Promise<InstagramExtract
   const run = promisify(execFile);
 
   try {
+    const { ytDlpCookieArgs } = await import('@/lib/cookies');
     const { stdout } = await run(
       'yt-dlp',
-      ['-J', '--no-warnings', target.normalizedUrl],
+      [...(await ytDlpCookieArgs('TIKTOK_COOKIE')), '-J', '--no-warnings', target.normalizedUrl],
       { timeout: 25000, maxBuffer: 20 * 1024 * 1024 }
     );
     const info = JSON.parse(stdout) as YtDlpInfo;
@@ -169,7 +170,14 @@ async function tryYtDlp(target: ParsedInstagramTarget): Promise<InstagramExtract
       items,
       sourceUrlForProxy: target.normalizedUrl,
     };
-  } catch {
+  } catch (err) {
+    const stderr = `${(err as { stderr?: unknown })?.stderr ?? ''} ${(err as Error)?.message ?? ''}`;
+    if (stderr.includes('not be comfortable') || stderr.includes('Log in for access')) {
+      throw new Error('TIKTOK_LOGIN_REQUIRED');
+    }
+    if (stderr.includes('Video unavailable') || stderr.includes('has been deleted')) {
+      throw new Error('MEDIA_UNAVAILABLE');
+    }
     return null;
   }
 }
@@ -211,7 +219,17 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ data: result }, { status: 200 });
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message === 'TIKTOK_LOGIN_REQUIRED') {
+      return NextResponse.json(
+        {
+          error:
+            'Video ini dibatasi TikTok ("mungkin tidak nyaman untuk sebagian orang") sehingga wajib login untuk diakses. Set variabel lingkungan TIKTOK_COOKIE (cookies.txt dari browser yang sudah login ke tiktok.com) untuk melewatinya.',
+          code: 'TIKTOK_LOGIN_REQUIRED',
+        },
+        { status: 422 }
+      );
+    }
     return NextResponse.json(
       {
         error:

@@ -3,6 +3,7 @@ import { stat, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { ytDlpCookieArgs } from './cookies';
 
 // TikTok's CDN (Akamai) 403s plain re-fetches of extracted URLs — signature and
 // client fingerprint are validated. yt-dlp with the page URL succeeds, so the
@@ -23,10 +24,17 @@ async function runDownload(url: string): Promise<string | null> {
   const { mkdir } = await import('node:fs/promises');
   await mkdir(tmpdir(), { recursive: true });
 
+  const cookieArgs = await ytDlpCookieArgs('TIKTOK_COOKIE');
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       'yt-dlp',
-      ['-o', filePath, '--no-warnings', '--no-part', url],
+      [
+        '-o', filePath,
+        '--no-warnings',
+        '--no-part',
+        ...cookieArgs,
+        url,
+      ],
       { stdio: ['ignore', 'ignore', 'pipe'], timeout: 180_000 }
     );
     let stderr = '';

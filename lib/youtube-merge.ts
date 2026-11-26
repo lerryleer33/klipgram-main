@@ -8,23 +8,9 @@ const mergeJobs = new Map<string, Promise<string | null>>();
 
 // Optional YouTube cookies (Netscape cookies.txt format) to pass YouTube's
 // "confirm you're not a bot" check on datacenter IPs. Set as env YOUTUBE_COOKIE.
-let cookieFile: string | null = null;
-
-async function getCookieArgs(): Promise<string[]> {
-  const raw = process.env.YOUTUBE_COOKIE?.trim();
-  if (!raw) return [];
-  if (!cookieFile) {
-    const { writeFile, mkdtemp } = await import('node:fs/promises');
-    const { tmpdir } = await import('node:os');
-    const dir = await mkdtemp(path.join(tmpdir(), 'yt-cookies-'));
-    cookieFile = path.join(dir, 'cookies.txt');
-    await writeFile(cookieFile, raw.endsWith('\n') ? raw : `${raw}\n`, 'utf8');
-  }
-  return ['--cookies', cookieFile];
-}
-
 export async function ytDlpArgs(extra: string[]): Promise<string[]> {
-  return [...(await getCookieArgs()), ...extra];
+  const { ytDlpCookieArgs } = await import('./cookies');
+  return [...(await ytDlpCookieArgs('YOUTUBE_COOKIE')), ...extra];
 }
 
 export function mergedFilePath(videoId: string): string {
