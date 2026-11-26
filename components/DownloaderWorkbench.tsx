@@ -19,6 +19,39 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+
+// Brand marks of the supported platforms (Simple Icons, loaded as inline SVG).
+const PLATFORM_ICONS = {
+  instagram: '/icons/simple-icons-instagram-1d1b18.svg',
+  tiktok: '/icons/simple-icons-tiktok-1d1b18.svg',
+  youtube: '/icons/simple-icons-youtube-1d1b18.svg',
+} as const;
+
+const SUPPORTED_PLATFORMS: Array<{
+  key: keyof typeof PLATFORM_ICONS;
+  name: string;
+  formats: string;
+  detect: (url: string) => boolean;
+}> = [
+  {
+    key: 'instagram',
+    name: 'Instagram',
+    formats: 'Post · Reels · Story · IGTV',
+    detect: (u) => /instagram\.com/i.test(u),
+  },
+  {
+    key: 'tiktok',
+    name: 'TikTok',
+    formats: 'Video · Foto · vm/vt link',
+    detect: (u) => /(^|\.)(tiktok\.com)/i.test(u),
+  },
+  {
+    key: 'youtube',
+    name: 'YouTube',
+    formats: 'Video · Shorts · youtu.be',
+    detect: (u) => /(^|\.)(youtube\.com|youtu\.be)/i.test(u),
+  },
+];
 import {
   InstagramExtractionResult,
   RecentHistoryItem,
@@ -28,6 +61,8 @@ import {
   getContentKindLabel,
   sanitizeFilename,
   validateInstagramUrl,
+  validateTikTokUrl,
+  validateYouTubeUrl,
 } from '@/lib/instagram';
 import { playRetroClick, playSuccessJingle } from '@/lib/retro-sfx';
 import AudioStudio from './AudioStudio';
@@ -90,8 +125,8 @@ const MODE_TABS: Array<{
   {
     id: 'all',
     label: 'Semua Tautan',
-    placeholder: 'Tempel tautan publik Instagram (Post, Reels, atau Story)...',
-    hint: 'Mendukung instagram.com/p/..., /reel/..., /tv/..., dan /stories/username/...',
+    placeholder: 'Tempel tautan publik Instagram, TikTok, atau YouTube (Post, Reels, Story, Video)...',
+    hint: 'Mendukung instagram.com/p/..., /reel/..., /stories/..., tiktok.com/@akun/video/..., vm.tiktok.com/..., serta youtube.com/watch?v=..., /shorts/... dan youtu.be/...',
   },
   {
     id: 'media',
@@ -167,9 +202,13 @@ export default function DownloaderWorkbench() {
 
   const detectedLinkInfo = useMemo(() => {
     if (!urlInput.trim()) return null;
-    const check = validateInstagramUrl(urlInput);
-    if (!check.ok) return null;
-    return check.target;
+    const ig = validateInstagramUrl(urlInput);
+    if (ig.ok) return ig.target;
+    const tiktok = validateTikTokUrl(urlInput);
+    if (tiktok.ok) return tiktok.target;
+    const youtube = validateYouTubeUrl(urlInput);
+    if (youtube.ok) return youtube.target;
+    return null;
   }, [urlInput]);
 
   // Compute live reactive mood for Klipi mascot
@@ -184,9 +223,12 @@ export default function DownloaderWorkbench() {
 
   const fetchMediaFromUrl = useCallback(
     async (rawUrl: string, autoExtractAudio = false) => {
-      const validation = validateInstagramUrl(rawUrl);
-      if (!validation.ok) {
-        setError(validation.error);
+      const ig = validateInstagramUrl(rawUrl);
+      const tiktok = ig.ok ? null : validateTikTokUrl(rawUrl);
+      const youtube = ig.ok || tiktok?.ok ? null : validateYouTubeUrl(rawUrl);
+      const validation = ig.ok ? ig : tiktok?.ok ? tiktok : youtube;
+      if (!validation || !validation.ok) {
+        setError(validation ? validation.error : 'Tautan tidak valid.');
         return;
       }
 
@@ -199,8 +241,14 @@ export default function DownloaderWorkbench() {
       setFailedPreviewIds({});
       setAudioTarget(null);
 
+      const endpoint = youtube?.ok
+        ? '/api/youtube'
+        : tiktok?.ok
+          ? '/api/tiktok'
+          : '/api/instagram';
+
       try {
-        const res = await fetch('/api/instagram', {
+        const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: rawUrl.trim() }),
@@ -241,7 +289,7 @@ export default function DownloaderWorkbench() {
           const firstVideo = extracted.items.find((item) => item.type === 'video');
           if (firstVideo) {
             setAudioTarget({
-              proxyUrl: buildProxyUrl(firstVideo.url),
+              proxyUrl: buildProxyUrl(firstVideo.url, { source: extracted.sourceUrlForProxy }),
               label: `${extracted.username}-${extracted.shortcode}`,
             });
           } else {
@@ -286,10 +334,18 @@ export default function DownloaderWorkbench() {
   };
 
   const activeItem = result?.items[activeSlideIndex] || null;
+  const isTikTokResult = result?.kind === 'tiktok_video' || result?.kind === 'tiktok_photo';
+  const proxySource = result?.sourceUrlForProxy;
+
+  const buildItemProxyUrl = (remoteUrl: string, opts?: { download?: boolean; filename?: string }) =>
+    buildProxyUrl(remoteUrl, {
+      ...opts,
+      source: proxySource,
+    });
 
   const triggerDownload = (remoteUrl: string, filename: string) => {
     if (sfxEnabled) playRetroClick();
-    const href = buildProxyUrl(remoteUrl, { download: true, filename });
+    const href = buildItemProxyUrl(remoteUrl, { download: true, filename });
     const a = document.createElement('a');
     a.href = href;
     a.download = sanitizeFilename(filename);
@@ -401,8 +457,34 @@ export default function DownloaderWorkbench() {
           })}
         </div>
 
+        {/* Supported platforms */}
+        <div className="mt-4 flex flex-wrap items-center gap-2" aria-label="Platform yang didukung">
+          {SUPPORTED_PLATFORMS.map((p) => {
+            const active = Boolean(urlInput) && p.detect(urlInput);
+            return (
+              <span
+                key={p.key}
+                className={`inline-flex items-center gap-2 rounded-full border-2 px-3 py-1.5 text-xs font-bold transition-all duration-150 ${
+                  active
+                    ? 'border-[#1D1B18] bg-[#FFFDF7] text-[#1D1B18] shadow-[2px_2px_0px_#1D1B18]'
+                    : 'border-[#E3D9C6] bg-[#F7F1E3]/60 text-[#867C6E]'
+                }`}
+                title={p.formats}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element -- tiny static brand SVG, no optimization needed */}
+                <img src={PLATFORM_ICONS[p.key]} alt="" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {p.name}
+                {active && <Check className="h-3.5 w-3.5 text-[#E84A36]" aria-label="didukung" />}
+              </span>
+            );
+          })}
+          <span className="text-[11px] text-[#867C6E] ml-1">
+            Semua platform di atas didukung — tempel link-nya di bawah.
+          </span>
+        </div>
+
         {/* URL Input Bar */}
-        <form onSubmit={handleSubmit} className="mt-5">
+        <form onSubmit={handleSubmit} className="mt-3">
           <div className="flex flex-col gap-3 sm:flex-row">
             <div className="relative flex-1">
               <input
@@ -556,10 +638,10 @@ export default function DownloaderWorkbench() {
                         preload="metadata"
                         poster={
                           activeItem.thumbnailUrl
-                            ? buildProxyUrl(activeItem.thumbnailUrl)
+                            ? buildItemProxyUrl(activeItem.thumbnailUrl)
                             : undefined
                         }
-                        src={buildProxyUrl(activeItem.url)}
+                        src={buildItemProxyUrl(activeItem.url)}
                         className="max-h-[496px] w-full rounded-xl object-contain"
                       />
                     ) : failedPreviewIds[activeItem.id] ? (
@@ -573,7 +655,7 @@ export default function DownloaderWorkbench() {
                     ) : (
                       /* eslint-disable-next-line @next/next/no-img-element */
                       <img
-                        src={buildProxyUrl(activeItem.url)}
+                        src={buildItemProxyUrl(activeItem.url)}
                         alt={`Media Instagram dari @${result.username}`}
                         referrerPolicy="no-referrer"
                         onError={() =>
@@ -738,7 +820,7 @@ export default function DownloaderWorkbench() {
                         onClick={() => {
                           if (sfxEnabled) playRetroClick();
                           setAudioTarget({
-                            proxyUrl: buildProxyUrl(activeItem.url),
+                            proxyUrl: buildItemProxyUrl(activeItem.url),
                             label: `${result.username}-${result.shortcode}`,
                           });
                         }}

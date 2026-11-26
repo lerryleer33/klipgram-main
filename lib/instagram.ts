@@ -1,4 +1,13 @@
-export type ContentKind = 'post' | 'reel' | 'tv' | 'story' | 'highlight' | 'carousel';
+export type ContentKind =
+  | 'post'
+  | 'reel'
+  | 'tv'
+  | 'story'
+  | 'highlight'
+  | 'carousel'
+  | 'tiktok_video'
+  | 'tiktok_photo'
+  | 'youtube_video';
 
 export type WorkspaceMode = 'all' | 'media' | 'reels' | 'story' | 'audio';
 
@@ -23,6 +32,8 @@ export interface InstagramExtractionResult {
   takenAt?: string;
   items: InstagramMediaItem[];
   strategy: string;
+  /** Canonical page URL the proxy uses to re-derive TikTok media (CDN URLs 403 on re-fetch). */
+  sourceUrlForProxy?: string;
 }
 
 export interface ParsedInstagramTarget {
@@ -51,7 +62,8 @@ const ALLOWED_INSTAGRAM_HOSTS = new Set([
   'instagr.am',
 ]);
 
-const ALLOWED_MEDIA_CDN_REGEX = /^([a-z0-9-]+\.)+(cdninstagram\.com|fbcdn\.net)$/i;
+const ALLOWED_MEDIA_CDN_REGEX =
+  /^([a-z0-9-]+\.)+(cdninstagram\.com|fbcdn\.net|tiktokcdn\.com|tiktokcdn-us\.com|tiktokcdn-eu\.com|tiktokv\.com|tiktokv\.us|muscdn\.com|musical\.ly|byteoversea\.com|ibyteimg\.com|ttwstatic\.com|akamaized\.net|tiktok\.com|googlevideo\.com|ytimg\.com|googleusercontent\.com|ggpht\.com)$/i;
 
 const IPV4_REGEX = /^\d{1,3}(\.\d{1,3}){3}$/;
 
@@ -208,6 +220,204 @@ export function validateInstagramUrl(rawInput: string): {
   };
 }
 
+const TIKTOK_ALLOWED_HOSTS = new Set([
+  'tiktok.com',
+  'www.tiktok.com',
+  'm.tiktok.com',
+  'vm.tiktok.com',
+  'vt.tiktok.com',
+]);
+
+export function validateTikTokUrl(rawInput: string): {
+  ok: true;
+  target: ParsedInstagramTarget;
+} | {
+  ok: false;
+  error: string;
+} {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return { ok: false, error: 'Masukkan tautan TikTok publik terlebih dahulu.' };
+  }
+  if (trimmed.length > 1000) {
+    return { ok: false, error: 'Tautan terlalu panjang. Periksa kembali tautan yang Anda salin.' };
+  }
+
+  let candidate = trimmed;
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = `https://${candidate}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return { ok: false, error: 'Format tautan tidak valid. Pastikan Anda menyalin URL lengkap dari TikTok.' };
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'Hanya protokol HTTPS yang didukung untuk keamanan.' };
+  }
+
+  if (parsed.username || parsed.password || parsed.port) {
+    return { ok: false, error: 'Tautan mengandung kredensial atau port yang tidak diizinkan.' };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (isPrivateOrIpHost(host) || !TIKTOK_ALLOWED_HOSTS.has(host)) {
+    return {
+      ok: false,
+      error: 'Gunakan tautan resmi dari tiktok.com (Video, Foto, atau tautan pendek vm/vt.tiktok.com).',
+    };
+  }
+
+  // Strip tracking query params (is_from_webapp, sender_device, utm_*, ...)
+  const cleanUrl = `${parsed.origin}${parsed.pathname}`;
+
+  const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+
+  // Short links: vm.tiktok.com/XXXX or vt.tiktok.com/XXXX
+  if ((host === 'vm.tiktok.com' || host === 'vt.tiktok.com') && segments[0]) {
+    if (!/^[a-zA-Z0-9_-]{3,64}$/.test(segments[0])) {
+      return { ok: false, error: 'Kode tautan pendek TikTok tidak valid.' };
+    }
+    return {
+      ok: true,
+      target: {
+        normalizedUrl: `https://${host}/${segments[0]}`,
+        kind: 'tiktok_video',
+        shortcode: segments[0],
+      },
+    };
+  }
+
+  // Photo posts: /photo/<id> or /<username>/photo/<id>
+  // Videos:      /video/<id>  or /<username>/video/<id>
+  // Embeds:      /embed/<id>  or /<username>/video/<id>
+  let kindToken: string | undefined;
+  let videoId: string | undefined;
+  if (segments.length >= 2 && ['photo', 'video', 'embed'].includes(segments[0])) {
+    kindToken = segments[0];
+    videoId = segments[1];
+  } else if (segments.length >= 3 && ['photo', 'video', 'embed'].includes(segments[1])) {
+    if (!/^[a-zA-Z0-9._@-]{1,64}$/.test(segments[0])) {
+      return { ok: false, error: 'Nama pengguna pada tautan TikTok tidak valid.' };
+    }
+    kindToken = segments[1];
+    videoId = segments[2];
+  }
+
+  if (!kindToken || !videoId) {
+    return {
+      ok: false,
+      error:
+        'Tautan harus mengarah ke Video (/video/...), Foto (/photo/...), atau tautan pendek vm.tiktok.com/...',
+    };
+  }
+
+  if (!/^[0-9]{5,40}$/.test(videoId)) {
+    return { ok: false, error: 'ID konten TikTok tidak valid.' };
+  }
+
+  return {
+    ok: true,
+    target: {
+      normalizedUrl: `https://www.tiktok.com/@tiktok/${kindToken}/${videoId}`,
+      kind: kindToken === 'photo' ? 'tiktok_photo' : 'tiktok_video',
+      shortcode: videoId,
+    },
+  };
+}
+
+const YOUTUBE_ALLOWED_HOSTS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'music.youtube.com',
+  'youtube-nocookie.com',
+  'www.youtube-nocookie.com',
+  'youtu.be',
+]);
+
+const YOUTUBE_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
+
+export function validateYouTubeUrl(rawInput: string): {
+  ok: true;
+  target: ParsedInstagramTarget;
+} | {
+  ok: false;
+  error: string;
+} {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return { ok: false, error: 'Masukkan tautan YouTube publik terlebih dahulu.' };
+  }
+  if (trimmed.length > 1000) {
+    return { ok: false, error: 'Tautan terlalu panjang. Periksa kembali tautan yang Anda salin.' };
+  }
+
+  let candidate = trimmed;
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = `https://${candidate}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return { ok: false, error: 'Format tautan tidak valid. Pastikan Anda menyalin URL lengkap dari YouTube.' };
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'Hanya protokol HTTPS yang didukung untuk keamanan.' };
+  }
+
+  if (parsed.username || parsed.password || parsed.port) {
+    return { ok: false, error: 'Tautan mengandung kredensial atau port yang tidak diizinkan.' };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (isPrivateOrIpHost(host) || !YOUTUBE_ALLOWED_HOSTS.has(host)) {
+    return {
+      ok: false,
+      error: 'Gunakan tautan resmi dari youtube.com atau shortlink youtu.be.',
+    };
+  }
+
+  const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+
+  let videoId: string | undefined;
+
+  // Short links: youtu.be/<id>
+  if (host === 'youtu.be') {
+    videoId = segments[0];
+  } else if (segments[0] === 'watch' && segments.length === 1) {
+    // youtube.com/watch?v=<id>
+    const v = parsed.searchParams.get('v');
+    if (v) videoId = v.trim();
+  } else if (segments.length >= 2 && ['shorts', 'embed', 'live', 'v'].includes(segments[0])) {
+    // youtube.com/shorts/<id>, /embed/<id>, /live/<id>, /v/<id>
+    videoId = segments[1];
+  }
+
+  if (!videoId || !YOUTUBE_ID_REGEX.test(videoId)) {
+    return {
+      ok: false,
+      error:
+        'Tautan harus mengarah ke Video (youtube.com/watch?v=...), Shorts (/shorts/...), atau shortlink youtu.be/...',
+    };
+  }
+
+  return {
+    ok: true,
+    target: {
+      normalizedUrl: `https://www.youtube.com/watch?v=${videoId}`,
+      kind: 'youtube_video',
+      shortcode: videoId,
+    },
+  };
+}
+
 export function validateAllowedMediaUrl(rawUrl: string): URL | null {
   try {
     const parsed = new URL(rawUrl);
@@ -237,7 +447,7 @@ export function sanitizeFilename(rawName: string, fallback = 'klipgram-media'): 
 
 export function buildProxyUrl(
   remoteUrl: string,
-  options?: { download?: boolean; filename?: string }
+  options?: { download?: boolean; filename?: string; source?: string }
 ): string {
   const params = new URLSearchParams();
   params.set('url', remoteUrl);
@@ -246,6 +456,9 @@ export function buildProxyUrl(
   }
   if (options?.filename) {
     params.set('filename', sanitizeFilename(options.filename));
+  }
+  if (options?.source) {
+    params.set('source', options.source);
   }
   return `/api/proxy?${params.toString()}`;
 }
@@ -281,5 +494,11 @@ export function getContentKindLabel(kind: ContentKind): string {
     case 'post':
     default:
       return 'Kiriman Instagram';
+    case 'tiktok_video':
+      return 'Video TikTok';
+    case 'tiktok_photo':
+      return 'Foto TikTok';
+    case 'youtube_video':
+      return 'Video YouTube';
   }
 }
