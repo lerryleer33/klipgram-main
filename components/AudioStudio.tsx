@@ -601,7 +601,7 @@ export default function AudioStudio({
                 <span className="block text-xs font-bold text-[#1D1B18] mb-1.5">
                   Kualitas Audio
                 </span>
-                <div className="inline-flex items-center gap-1 rounded-xl border-2 border-[#1D1B18] bg-[#EDE3CE] p-1">
+                <div className="flex flex-wrap items-center gap-1 rounded-xl border-2 border-[#1D1B18] bg-[#EDE3CE] p-1">
                   {SAMPLE_RATES.map((sr) => (
                     <button
                       key={sr.value}
@@ -624,7 +624,7 @@ export default function AudioStudio({
 
               <div>
                 <span className="block text-xs font-bold text-[#1D1B18] mb-1.5">Saluran</span>
-                <div className="inline-flex items-center gap-1 rounded-xl border-2 border-[#1D1B18] bg-[#EDE3CE] p-1">
+                <div className="flex flex-wrap items-center gap-1 rounded-xl border-2 border-[#1D1B18] bg-[#EDE3CE] p-1">
                   {(['stereo', 'mono'] as const).map((mode) => (
                     <button
                       key={mode}
